@@ -31,5 +31,5 @@ void main() {
     for(int i = 0; i < 9; i++)
 		col += sampleTex[i] * kernel[i];
 
-	c = vec4(mix(col, vec3(0, 0.1, 0), 0.8), 0.5);
+	c = vec4(col, 0.05);
 }  

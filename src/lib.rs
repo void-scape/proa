@@ -9,6 +9,7 @@
 //! - Boid flocking
 
 use crate::{
+    boids::BoidMemory,
     pebbles::PebbleRenderer,
     postprocess::PostProcessor,
     shader::uniform,
@@ -18,8 +19,10 @@ use glam::{Mat4, Quat, Vec2, Vec3};
 use glazer::winit::{self, event::WindowEvent};
 use glow::HasContext;
 
+mod boids;
 mod pebbles;
 mod postprocess;
+mod rng;
 mod shader;
 mod sprite;
 mod texture;
@@ -32,11 +35,12 @@ pub struct Memory {
 const SEGMENTS: usize = 14;
 struct World {
     cursor: Vec2,
-    joints: [Joint; SEGMENTS],
+    joints: Vec<[Joint; SEGMENTS]>,
     joint_renderer: JointRenderer,
     sprites: [Sprite; SEGMENTS],
     sprite_renderer: SpriteRenderer,
     pebble_renderer: PebbleRenderer,
+    boid_memory: BoidMemory,
     postprocessor: PostProcessor,
 }
 
@@ -81,7 +85,6 @@ pub fn handle_input(
 pub fn update_and_render(
     glazer::PlatformUpdate {
         memory,
-        window,
         gl,
         delta,
         width,
@@ -97,36 +100,42 @@ pub fn update_and_render(
         10.0, 18.0, 25.0, 23.0, 24.0, 23.0, 22.0, 21.0, 16.0, 14.0, 10.0, 6.0, 3.0, 2.0,
     ];
 
-    let world = memory.world.get_or_insert_with(|| {
-        let mut offset = 0.0;
-        World {
-            cursor: Vec2::ZERO,
-            joints: joint_sizes.map(|size| {
+    let world = memory.world.get_or_insert_with(|| World {
+        cursor: Vec2::ZERO,
+        joints: Vec::new(),
+        joint_renderer: JointRenderer::new(gl, width, height),
+        sprites: [Sprite::from_size(gl, Vec2::splat(16.0)); SEGMENTS],
+        sprite_renderer: SpriteRenderer::new(gl, width, height),
+        pebble_renderer: PebbleRenderer::new(gl),
+        boid_memory: BoidMemory::default(),
+        postprocessor: PostProcessor::new(gl, width, height),
+    });
+
+    world.boid_memory.update(delta);
+    let num_boids = world.boid_memory.boids().len();
+    if world.joints.len() < num_boids {
+        while world.joints.len() < num_boids {
+            let mut offset = 0.0;
+            world.joints.push(joint_sizes.map(|size| {
                 let translation = Vec2::X * offset;
                 offset += separation;
                 Joint { size, translation }
-            }),
-            joint_renderer: JointRenderer::new(gl, width, height),
-            sprites: [Sprite::from_size(gl, Vec2::splat(16.0)); SEGMENTS],
-            sprite_renderer: SpriteRenderer::new(gl, width, height),
-            pebble_renderer: PebbleRenderer::new(gl),
-            postprocessor: PostProcessor::new(gl, width, height),
+            }))
         }
-    });
+    }
 
-    let scale_factor = window.scale_factor();
-    let mut cursor = world.cursor / scale_factor as f32;
-    cursor -= Vec2::new(width as f32 / 2.0, height as f32 / 2.0);
-    cursor.y = -cursor.y;
+    for (boid, joints) in world
+        .boid_memory
+        .boids()
+        .iter()
+        .zip(world.joints.iter_mut())
+    {
+        let head_translation = boid.translation;
+        let mut target =
+            head_translation + boid.velocity.normalize_or(Vec2::X) * separation + speed * delta;
 
-    let head_translation = world.joints[0].translation;
-    if cursor.distance_squared(head_translation) > separation * separation {
-        let mut target = (cursor - head_translation).normalize_or(Vec2::X)
-            * (separation + speed * delta)
-            + head_translation;
-
-        for i in 0..world.joints.len() {
-            let joint = &mut world.joints[i];
+        for i in 0..joints.len() {
+            let joint = &mut joints[i];
             let offset = target - joint.translation;
             let current_distance = offset.length();
 
@@ -136,10 +145,10 @@ pub fn update_and_render(
             }
 
             target = joint.translation;
-            if i < world.joints.len() - 2 {
-                let joint_translation = world.joints[i].translation;
-                let anchor_translation = world.joints[i + 1].translation;
-                let joint2_translation = world.joints[i + 2].translation;
+            if i < joints.len() - 2 {
+                let joint_translation = joints[i].translation;
+                let anchor_translation = joints[i + 1].translation;
+                let joint2_translation = joints[i + 2].translation;
 
                 let normalized_joint =
                     (joint_translation - anchor_translation).normalize_or(Vec2::X);
@@ -150,20 +159,20 @@ pub fn update_and_render(
                 if angle.abs() < min_joint_angle {
                     let rotation = min_joint_angle * angle.signum();
                     let constrained_direction = normalized_joint.rotate(Vec2::from_angle(rotation));
-                    let joint2 = &mut world.joints[i + 2];
+                    let joint2 = &mut joints[i + 2];
                     joint2.translation = constrained_direction * separation + anchor_translation;
                 }
             }
         }
-    }
 
-    for (sprite, joint) in world.sprites.iter_mut().zip(world.joints.iter()) {
-        sprite.translation = joint.translation.extend(10.0);
+        for (sprite, joint) in world.sprites.iter_mut().zip(joints.iter()) {
+            sprite.translation = joint.translation.extend(10.0);
+        }
     }
 
     unsafe {
         world.postprocessor.bind_framebuffer(gl);
-        gl.clear_color(0.0, 0.0, 0.0, 1.0);
+        gl.clear_color(0.0, 0.1, 0.0, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         gl.enable(glow::DEPTH_TEST);
         gl.enable(glow::BLEND);
@@ -171,43 +180,45 @@ pub fn update_and_render(
 
         world.pebble_renderer.render(gl);
 
-        // koi
-        let vertex_count = world.joint_renderer.bind_ellipse(gl);
-        let mut render_pectoral_fins = |seg: usize, size: f32| {
-            let joint = world.joints[seg];
-            let heading =
-                (world.joints[seg - 1].translation - joint.translation).normalize_or_zero();
-            for side in [Vec2::Y, Vec2::NEG_Y].into_iter() {
-                let transform = Mat4::from_scale_rotation_translation(
-                    Vec3::ONE * size,
-                    Quat::from_rotation_z(side.rotate(heading).to_angle() - 0.85 * side.y.signum()),
-                    (joint.translation + side.rotate(heading) * 20.0).extend(-1.0),
-                );
-                world
-                    .joint_renderer
-                    .render(gl, transform, vertex_count, glow::TRIANGLE_FAN);
-            }
-        };
-        render_pectoral_fins(3, 0.8);
-        render_pectoral_fins(7, 0.95);
+        for joints in world.joints.iter() {
+            let vertex_count = world.joint_renderer.bind_ellipse(gl);
+            let mut render_pectoral_fins = |seg: usize, size: f32| {
+                let joint = joints[seg];
+                let heading = (joints[seg - 1].translation - joint.translation).normalize_or_zero();
+                for side in [Vec2::Y, Vec2::NEG_Y].into_iter() {
+                    let transform = Mat4::from_scale_rotation_translation(
+                        Vec3::ONE * size,
+                        Quat::from_rotation_z(
+                            side.rotate(heading).to_angle() - 0.85 * side.y.signum(),
+                        ),
+                        (joint.translation + side.rotate(heading) * 20.0).extend(-1.0),
+                    );
+                    world
+                        .joint_renderer
+                        .render(gl, transform, vertex_count, glow::TRIANGLE_FAN);
+                }
+            };
+            render_pectoral_fins(3, 0.8);
+            render_pectoral_fins(7, 0.95);
 
-        // caudal fin
-        let seg = world.joints.len() - 1;
-        let joint = world.joints[seg];
-        let heading = (world.joints[seg - 1].translation - joint.translation).normalize_or_zero();
-        let transform = Mat4::from_scale_rotation_translation(
-            Vec3::new(0.3, 1.2, 1.0),
-            Quat::from_rotation_z(heading.to_angle() + std::f32::consts::PI / 2.0),
-            joint.translation.extend(-1.0),
-        );
-        world
-            .joint_renderer
-            .render(gl, transform, vertex_count, glow::TRIANGLE_FAN);
+            // caudal fin
+            let seg = joints.len() - 1;
+            let joint = joints[seg];
+            let heading = (joints[seg - 1].translation - joint.translation).normalize_or_zero();
+            let transform = Mat4::from_scale_rotation_translation(
+                Vec3::new(0.3, 1.2, 1.0),
+                Quat::from_rotation_z(heading.to_angle() + std::f32::consts::PI / 2.0),
+                joint.translation.extend(-1.0),
+            );
+            world
+                .joint_renderer
+                .render(gl, transform, vertex_count, glow::TRIANGLE_FAN);
 
-        let vertex_count = world.joint_renderer.bind_joints(gl, &world.joints, delta);
-        world
-            .joint_renderer
-            .render(gl, Mat4::IDENTITY, vertex_count, glow::TRIANGLE_STRIP);
+            let vertex_count = world.joint_renderer.bind_joints(gl, joints, delta);
+            world
+                .joint_renderer
+                .render(gl, Mat4::IDENTITY, vertex_count, glow::TRIANGLE_STRIP);
+        }
 
         // debug spine
         // for sprite in world.sprites.iter() {
