@@ -1,0 +1,2 @@
+- pebbles.jpg: https://openverse.org/image/14a7c041-4e36-46c3-b106-3396cf55121d?q=pebble&p=37
+- dudv.jpg: https://www.evl.uic.edu/bijeong/cs594/proj2/

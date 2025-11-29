@@ -1,4 +1,7 @@
-use crate::shader::uniform;
+use crate::{
+    shader::uniform,
+    texture::{self, Image},
+};
 use glam::{Mat4, Quat, Vec2, Vec3};
 use glazer::glow::{self, HasContext};
 
@@ -11,58 +14,23 @@ pub struct Sprite {
 }
 
 impl Sprite {
-    pub fn from_size(gl: &glow::Context, size: Vec2) -> Self {
+    pub fn from_image(gl: &glow::Context, path: &str) -> Self {
         Self {
             translation: Vec3::ZERO,
             rotation: Quat::default(),
             scale: Vec2::ONE,
-            image: white_image(gl, size),
+            image: texture::load_image(gl, path),
         }
     }
-}
 
-fn white_image(gl: &glow::Context, size: Vec2) -> Image {
-    unsafe {
-        let texture = gl.create_texture().unwrap();
-        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::NEAREST as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::NEAREST as i32,
-        );
-
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGB as i32,
-            1,
-            1,
-            0,
-            glow::RGB,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(Some(&[255; 3])),
-        );
-
-        Image {
-            texture,
-            width: size.x,
-            height: size.y,
+    pub fn from_size(gl: &glow::Context, size: Vec2) -> Self {
+        Self {
+            translation: Vec3::ZERO,
+            rotation: Quat::default(),
+            scale: size,
+            image: texture::default_image(gl),
         }
     }
-}
-
-#[derive(Clone, Copy)]
-pub struct Image {
-    pub texture: glow::Texture,
-    pub width: f32,
-    pub height: f32,
 }
 
 pub struct SpriteRenderer {
@@ -89,9 +57,6 @@ impl SpriteRenderer {
         ];
 
         unsafe {
-            gl.enable(glow::DEPTH_TEST);
-            gl.depth_func(glow::LESS);
-
             let vao = gl.create_vertex_array().unwrap();
             let vbo = gl.create_buffer().unwrap();
             let ebo = gl.create_buffer().unwrap();

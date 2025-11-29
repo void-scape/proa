@@ -8,10 +8,12 @@ pub fn uniform<F: FnOnce(Option<&glow::UniformLocation>)>(
     f: F,
 ) {
     unsafe {
-        let location = gl
-            .get_uniform_location(program, uniform_ident)
-            .unwrap_or_else(|| panic!("failed to get location for uniform {uniform_ident}"));
-        f(Some(&location))
+        match gl.get_uniform_location(program, uniform_ident) {
+            Some(location) => f(Some(&location)),
+            None => {
+                glazer::log!("[ERROR] uniform {uniform_ident} not found");
+            }
+        }
     }
 }
 

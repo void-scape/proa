@@ -9,6 +9,8 @@
 //! - Boid flocking
 
 use crate::{
+    pebbles::PebbleRenderer,
+    postprocess::PostProcessor,
     shader::uniform,
     sprite::{Sprite, SpriteRenderer},
 };
@@ -16,8 +18,11 @@ use glam::{Mat4, Quat, Vec2, Vec3};
 use glazer::winit::{self, event::WindowEvent};
 use glow::HasContext;
 
+mod pebbles;
+mod postprocess;
 mod shader;
 mod sprite;
+mod texture;
 
 #[derive(Default)]
 pub struct Memory {
@@ -31,6 +36,8 @@ struct World {
     joint_renderer: JointRenderer,
     sprites: [Sprite; SEGMENTS],
     sprite_renderer: SpriteRenderer,
+    pebble_renderer: PebbleRenderer,
+    postprocessor: PostProcessor,
 }
 
 #[unsafe(no_mangle)]
@@ -57,11 +64,13 @@ pub fn handle_input(
             }
         }
         WindowEvent::Resized(size) => {
-            if let Some(world) = &memory.world {
+            if let Some(world) = &mut memory.world {
                 let w = size.width as usize;
                 let h = size.height as usize;
-                world.joint_renderer.resize(gl, w, h);
-                world.sprite_renderer.resize(gl, w, h);
+                // NOTE: Fish would look to small if they were resized
+                // world.joint_renderer.resize(gl, w, h);
+                // world.sprite_renderer.resize(gl, w, h);
+                world.postprocessor.resize(gl, w, h);
             }
         }
         _ => {}
@@ -91,6 +100,7 @@ pub fn update_and_render(
     let world = memory.world.get_or_insert_with(|| {
         let mut offset = 0.0;
         World {
+            cursor: Vec2::ZERO,
             joints: joint_sizes.map(|size| {
                 let translation = Vec2::X * offset;
                 offset += separation;
@@ -99,7 +109,8 @@ pub fn update_and_render(
             joint_renderer: JointRenderer::new(gl, width, height),
             sprites: [Sprite::from_size(gl, Vec2::splat(16.0)); SEGMENTS],
             sprite_renderer: SpriteRenderer::new(gl, width, height),
-            cursor: Vec2::ZERO,
+            pebble_renderer: PebbleRenderer::new(gl),
+            postprocessor: PostProcessor::new(gl, width, height),
         }
     });
 
@@ -151,11 +162,17 @@ pub fn update_and_render(
     }
 
     unsafe {
-        gl.clear_color(0.1, 0.1, 0.1, 1.0);
+        world.postprocessor.bind_framebuffer(gl);
+        gl.clear_color(0.0, 0.0, 0.0, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+        gl.enable(glow::DEPTH_TEST);
+        gl.enable(glow::BLEND);
+        gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
 
+        world.pebble_renderer.render(gl);
+
+        // koi
         let vertex_count = world.joint_renderer.bind_ellipse(gl);
-
         let mut render_pectoral_fins = |seg: usize, size: f32| {
             let joint = world.joints[seg];
             let heading =
@@ -196,6 +213,13 @@ pub fn update_and_render(
         // for sprite in world.sprites.iter() {
         //     world.sprite_renderer.render(gl, sprite);
         // }
+
+        // post processing
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        // gl.clear_color(0.1, 0.1, 0.1, 1.0);
+        // gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+        gl.disable(glow::DEPTH_TEST);
+        world.postprocessor.render_to_active_framebuffer(gl, delta);
     }
 }
 
@@ -250,6 +274,7 @@ impl JointRenderer {
 
     pub fn resize(&self, gl: &glow::Context, width: usize, height: usize) {
         unsafe {
+            gl.use_program(Some(self.shader));
             uniform(gl, self.shader, "proj_matrix", |location| {
                 let w_2 = width as f32 / 2.0;
                 let h_2 = height as f32 / 2.0;
@@ -263,6 +288,7 @@ impl JointRenderer {
         unsafe {
             self.time += dt;
 
+            gl.use_program(Some(self.shader));
             uniform(gl, self.shader, "ripple", |location| {
                 gl.uniform_1_f32(location, 0.0);
             });
@@ -306,6 +332,7 @@ impl JointRenderer {
 
     fn bind_ellipse(&mut self, gl: &glow::Context) -> usize {
         unsafe {
+            gl.use_program(Some(self.shader));
             uniform(gl, self.shader, "ripple", |location| {
                 gl.uniform_1_f32(location, 1.0);
             });
